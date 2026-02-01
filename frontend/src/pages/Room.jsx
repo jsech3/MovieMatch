@@ -1,343 +1,438 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import axios from 'axios';
-import { getDatabase, ref, onValue, off } from 'firebase/database';
+import { roomApi, movieApi } from '../utils/api';
+import { FaGamepad, FaCopy, FaCheck, FaUsers, FaBolt, FaMicrophone, FaTrophy } from 'react-icons/fa';
 
-// Components
-import MovieCard from '../components/MovieCard';
-import UserList from '../components/UserList';
-import VoteResults from '../components/VoteResults';
-import Roulette from '../components/Roulette';
+// Game round components
+import SpeedRound from '../components/SpeedRound';
+import ThePitch from '../components/ThePitch';
+import FaceOff from '../components/FaceOff';
+import GameResults from '../components/GameResults';
+
+// Game phases in order
+const PHASES = ['lobby', 'loading', 'speed-round', 'the-pitch', 'face-off', 'results'];
 
 const Room = ({ user, setUser }) => {
   const { roomCode } = useParams();
   const navigate = useNavigate();
-  
-  // State
+
+  // Core state
   const [room, setRoom] = useState(null);
-  const [movies, setMovies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [currentMovieIndex, setCurrentMovieIndex] = useState(0);
-  const [votingComplete, setVotingComplete] = useState(false);
-  const [isRoulette, setIsRoulette] = useState(false);
-  const [selectedMovie, setSelectedMovie] = useState(null);
+  const [phase, setPhase] = useState('lobby');
+  const [codeCopied, setCodeCopied] = useState(false);
 
-  // If no user, redirect to join room page
+  // Movie pools for each round
+  const [allMovies, setAllMovies] = useState([]);
+  const [speedRoundMovies, setSpeedRoundMovies] = useState([]);
+  const [pitchMovies, setPitchMovies] = useState([]);
+  const [faceOffMovies, setFaceOffMovies] = useState([]);
+
+  // Round results
+  const [speedResults, setSpeedResults] = useState([]);
+  const [pitchResults, setPitchResults] = useState([]);
+  const [winner, setWinner] = useState(null);
+
+  // Redirect if no user
   useEffect(() => {
     if (!user) {
       navigate(`/join-room?room=${roomCode}`);
     }
   }, [user, roomCode, navigate]);
 
-  // Get room data and set up realtime listener
+  // Fetch room data on mount + poll for updates
   useEffect(() => {
     if (!user) return;
 
-    setLoading(true);
-    const db = getDatabase();
-    const roomRef = ref(db, `rooms/${roomCode}`);
-
-    // Set up realtime listener for room data
-    onValue(roomRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const roomData = snapshot.val();
-        setRoom(roomData);
-        
-        // Convert movies object to array
-        if (roomData.movies) {
-          const moviesArray = Object.values(roomData.movies);
-          setMovies(moviesArray);
-        }
-        
-        // Check if voting is complete
-        if (roomData.selectedMovie) {
-          setSelectedMovie(roomData.selectedMovie);
-          setVotingComplete(true);
-        }
-      } else {
-        setError('Room not found');
+    const fetchRoom = async () => {
+      try {
+        const response = await roomApi.getRoom(roomCode);
+        setRoom(response.data);
+        setLoading(false);
+      } catch (err) {
+        console.error('Error fetching room:', err);
+        setError('Room not found or connection failed.');
+        setLoading(false);
       }
-      setLoading(false);
-    });
-
-    // Cleanup listener on unmount
-    return () => {
-      off(roomRef);
     };
+
+    fetchRoom();
+
+    // Poll every 2s for multiplayer sync (in-memory backend has no realtime)
+    const interval = setInterval(fetchRoom, 2000);
+    return () => clearInterval(interval);
   }, [roomCode, user]);
 
-  // Handle voting
-  const handleVote = async (vote) => {
+  // Copy room code to clipboard
+  const handleCopyCode = async () => {
     try {
-      await axios.post(`/api/rooms/${roomCode}/vote`, {
-        userId: user.id,
-        movieId: movies[currentMovieIndex].id,
-        vote: vote
-      });
+      await navigator.clipboard.writeText(roomCode);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    } catch {
+      // Fallback
+      const el = document.createElement('textarea');
+      el.value = roomCode;
+      document.body.appendChild(el);
+      el.select();
+      document.execCommand('copy');
+      document.body.removeChild(el);
+      setCodeCopied(true);
+      setTimeout(() => setCodeCopied(false), 2000);
+    }
+  };
 
-      // Move to next movie if not the last one
-      if (currentMovieIndex < movies.length - 1) {
-        setCurrentMovieIndex(currentMovieIndex + 1);
-      } else {
-        // All movies voted on, check results
-        const resultsResponse = await axios.get(`/api/rooms/${roomCode}/results`);
-        
-        // If there's a clear winner (top movie has more than 50% yes votes)
-        const topMovie = resultsResponse.data.results[0];
-        if (topMovie && (topMovie.yesVotes / topMovie.totalVotes) > 0.5) {
-          await axios.post(`/api/rooms/${roomCode}/select`, {
-            movieId: topMovie.id,
-            userId: user.id
-          });
-          setSelectedMovie(topMovie);
-          setVotingComplete(true);
-        } else {
-          // No clear winner, suggest roulette
-          setVotingComplete(true);
-        }
+  // Start the game — fetch movies and begin Speed Round
+  const handleStartGame = async () => {
+    setPhase('loading');
+    setError('');
+
+    try {
+      // Determine vibe-based fetch params
+      const vibe = room?.settings?.vibe || 'popular';
+      const params = vibeToParams(vibe);
+
+      // Fetch movies from TMDB
+      const response = await movieApi.discoverMovies(params);
+      let movies = response.data.results || [];
+
+      if (movies.length === 0) {
+        setError('No movies found. Try a different vibe.');
+        setPhase('lobby');
+        return;
       }
-    } catch (error) {
-      console.error('Error voting:', error);
-      setError('Failed to record your vote. Please try again.');
-    }
-  };
 
-  // Start roulette
-  const handleStartRoulette = async () => {
-    setIsRoulette(true);
-    try {
-      const response = await axios.post(`/api/rooms/${roomCode}/roulette`);
-      setSelectedMovie(response.data.selectedMovie);
-    } catch (error) {
-      console.error('Error with roulette:', error);
-      setError('Failed to select a random movie. Please try again.');
-    }
-  };
+      // Shuffle for variety
+      movies = shuffleArray(movies);
 
-  // Fetch more movies
-  const handleFetchMoreMovies = async () => {
-    if (!room || !user.isHost) return;
-    
-    try {
-      setLoading(true);
-      
-      // Get movies from TMDB based on room filters
-      const filters = room.filters || {};
-      
-      const response = await axios.get('/api/movies/discover', {
-        params: {
-          platform: filters.platform,
-          genre: filters.genre,
-          minRuntime: filters.minRuntime,
-          maxRuntime: filters.maxRuntime,
-          page: Math.floor(Math.random() * 5) + 1 // Get a random page of results
-        }
-      });
-      
-      if (response.data.results && response.data.results.length > 0) {
-        // Add movies to the room
-        await axios.post(`/api/rooms/${roomCode}/movies`, {
-          movies: response.data.results.slice(0, 10), // Limit to 10 movies
-          userId: user.id
-        });
-      } else {
-        setError('No movies found matching your filters.');
+      // Take up to 6 for the game — keeps it fast
+      const gameMovies = movies.slice(0, 6);
+      setAllMovies(gameMovies);
+
+      // Add movies to room on backend
+      try {
+        await roomApi.addMovies(roomCode, gameMovies, user.id);
+        await roomApi.startGame(roomCode, user.id);
+      } catch {
+        // Non-critical — game can proceed client-side
       }
-      
-    } catch (error) {
-      console.error('Error fetching movies:', error);
-      setError('Failed to fetch more movies. Please try again.');
-    } finally {
-      setLoading(false);
+
+      // Speed Round gets all movies
+      setSpeedRoundMovies(gameMovies);
+      setPhase('speed-round');
+    } catch (err) {
+      console.error('Error starting game:', err);
+      setError('Failed to fetch movies. Check your TMDB API key.');
+      setPhase('lobby');
     }
   };
 
-  // Close room (only host)
-  const handleCloseRoom = async () => {
-    if (!user.isHost) return;
-    
+  // Speed Round complete → advance to The Pitch with top 3
+  const handleSpeedRoundComplete = useCallback((results) => {
+    setSpeedResults(results);
+
+    const yesMovies = results.filter((r) => r.vote === true).map((r) => r.movie);
+    const skippedMovies = results.filter((r) => r.vote === null).map((r) => r.movie);
+    const noMovies = results.filter((r) => r.vote === false).map((r) => r.movie);
+
+    // Take up to 3: prefer yes, then skipped, then no
+    let pitchPool = [...yesMovies, ...skippedMovies, ...noMovies].slice(0, 3);
+    setPitchMovies(pitchPool);
+
+    if (pitchPool.length > 1) {
+      setPhase('the-pitch');
+    } else if (pitchPool.length === 1) {
+      setWinner(pitchPool[0]);
+      setPhase('results');
+    } else {
+      setPhase('results');
+    }
+  }, []);
+
+  // The Pitch complete → advance to Face-Off with top 2
+  const handlePitchComplete = useCallback((results) => {
+    setPitchResults(results);
+
+    const keptMovies = results.filter((r) => r.vote === true).map((r) => r.movie);
+    const skippedMovies = results.filter((r) => r.vote !== true).map((r) => r.movie);
+
+    // Top 2 for a single Face-Off matchup
+    let contenders = [...keptMovies, ...skippedMovies].slice(0, 2);
+    setFaceOffMovies(contenders);
+
+    if (contenders.length === 2) {
+      setPhase('face-off');
+    } else if (contenders.length === 1) {
+      setWinner(contenders[0]);
+      setPhase('results');
+    } else {
+      setPhase('results');
+    }
+  }, []);
+
+  // Face-Off complete → show results
+  const handleFaceOffComplete = useCallback((finalWinner) => {
+    setWinner(finalWinner);
+    setPhase('results');
+
+    // Record winner on backend
     try {
-      await axios.post(`/api/rooms/${roomCode}/close`, {
-        userId: user.id
-      });
-      navigate('/');
-    } catch (error) {
-      console.error('Error closing room:', error);
-      setError('Failed to close the room. Please try again.');
+      roomApi.selectMovie(roomCode, finalWinner.id, user?.id);
+    } catch {
+      // Non-critical
     }
+  }, [roomCode, user]);
+
+  // Play again — reset everything
+  const handlePlayAgain = () => {
+    setPhase('lobby');
+    setAllMovies([]);
+    setSpeedRoundMovies([]);
+    setPitchMovies([]);
+    setFaceOffMovies([]);
+    setSpeedResults([]);
+    setPitchResults([]);
+    setWinner(null);
   };
 
-  // Render loading state
+  // Done — go home
+  const handleDone = () => {
+    navigate('/');
+  };
+
+  // --- Render ---
+
   if (loading && !room) {
     return (
       <div className="container mx-auto px-4 py-20 text-center">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary-500 mx-auto"></div>
-        <p className="mt-4 text-xl text-white">Loading room...</p>
+        <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary-500 mx-auto" />
+        <p className="mt-4 text-xl text-gray-400">Joining room...</p>
       </div>
     );
   }
 
-  // Render error state
-  if (error) {
+  if (error && phase === 'lobby' && !room) {
     return (
       <div className="container mx-auto px-4 py-10">
-        <div className="bg-red-600 text-white p-6 rounded-lg max-w-lg mx-auto">
-          <h2 className="text-2xl font-bold mb-2">Error</h2>
+        <div className="max-w-md mx-auto bg-red-900/30 border border-red-700 text-red-300 p-6 rounded-2xl text-center">
+          <h2 className="text-xl font-bold mb-2">Oops</h2>
           <p>{error}</p>
-          <button 
-            onClick={() => navigate('/')} 
-            className="mt-4 btn-primary"
-          >
-            Return Home
+          <button onClick={() => navigate('/')} className="mt-4 px-6 py-2 bg-gray-800 text-white rounded-xl">
+            Go Home
           </button>
         </div>
       </div>
     );
   }
 
-  // Render room not found
-  if (!room) {
-    return (
-      <div className="container mx-auto px-4 py-10">
-        <div className="bg-gray-800 text-white p-6 rounded-lg max-w-lg mx-auto">
-          <h2 className="text-2xl font-bold mb-2">Room Not Found</h2>
-          <p>The room you're looking for doesn't exist or has been closed.</p>
-          <button 
-            onClick={() => navigate('/')} 
-            className="mt-4 btn-primary"
-          >
-            Return Home
-          </button>
-        </div>
-      </div>
-    );
-  }
+  const users = room?.users || {};
+  const userCount = Object.keys(users).length;
 
   return (
-    <div className="container mx-auto px-4 py-8">
-      {/* Room Header */}
-      <div className="bg-gray-900 rounded-lg p-4 mb-6 shadow-lg">
-        <div className="flex flex-col md:flex-row justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold text-white">Room: {roomCode}</h1>
-            <p className="text-gray-400">Created by {room.creator}</p>
+    <div className="container mx-auto px-4 py-6 max-w-lg">
+      {/* Phase: Lobby */}
+      {phase === 'lobby' && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Room Header */}
+          <div className="text-center">
+            <FaGamepad className="text-4xl text-primary-400 mx-auto mb-3" />
+            <h1 className="text-3xl font-bold text-white">Game Night</h1>
+            <p className="text-gray-400 mt-1">Invite your friends. Pick a movie.</p>
           </div>
-          
-          <div className="mt-4 md:mt-0">
-            <div className="flex space-x-3">
-              {user.isHost && !votingComplete && movies.length === 0 && (
-                <button 
-                  onClick={handleFetchMoreMovies}
-                  className="btn-primary"
-                  disabled={loading}
-                >
-                  {loading ? 'Loading...' : 'Find Movies'}
-                </button>
-              )}
-              
-              {user.isHost && (
-                <button 
-                  onClick={handleCloseRoom}
-                  className="btn-outline"
-                >
-                  Close Room
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Column - Users */}
-        <div className="lg:col-span-1">
-          <UserList users={room.users} />
-        </div>
-        
-        {/* Right Column - Movies or Results */}
-        <div className="lg:col-span-2">
-          {/* No movies state */}
-          {movies.length === 0 && !votingComplete && (
-            <div className="bg-gray-900 rounded-lg p-6 text-center">
-              <h2 className="text-2xl font-bold mb-4 text-white">Waiting for Movies</h2>
-              <p className="text-gray-400 mb-6">
-                {user.isHost 
-                  ? 'Click "Find Movies" to add movies for voting.' 
-                  : 'Waiting for the host to add movies for voting.'}
-              </p>
-              
-              {user.isHost && (
-                <button 
-                  onClick={handleFetchMoreMovies}
-                  className="btn-primary"
-                  disabled={loading}
-                >
-                  {loading ? 'Loading...' : 'Find Movies'}
-                </button>
+          {/* Room Code */}
+          <div className="text-center">
+            <p className="text-gray-500 text-xs uppercase tracking-wider mb-1">Room Code</p>
+            <button
+              onClick={handleCopyCode}
+              className="inline-flex items-center gap-2 px-6 py-3 bg-gray-800 border-2 border-gray-700 rounded-xl hover:border-primary-500 transition group"
+            >
+              <span className="text-3xl font-mono font-bold text-white tracking-widest">{roomCode}</span>
+              {codeCopied ? (
+                <FaCheck className="text-green-400" />
+              ) : (
+                <FaCopy className="text-gray-500 group-hover:text-primary-400 transition" />
               )}
+            </button>
+            {codeCopied && <p className="text-green-400 text-xs mt-1">Copied!</p>}
+          </div>
+
+          {/* Player List */}
+          <div className="bg-gray-800/50 border border-gray-700 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <FaUsers className="text-primary-400" />
+              <span className="text-white font-semibold">Players ({userCount})</span>
             </div>
-          )}
-          
-          {/* Voting state */}
-          {movies.length > 0 && !votingComplete && currentMovieIndex < movies.length && (
-            <div>
-              <div className="mb-4 bg-gray-800 rounded-lg p-3">
-                <div className="flex justify-between items-center">
-                  <p className="text-gray-300">
-                    Movie {currentMovieIndex + 1} of {movies.length}
-                  </p>
-                  <div className="bg-gray-700 h-2 w-1/2 rounded-full">
-                    <div 
-                      className="bg-primary-500 h-2 rounded-full"
-                      style={{ width: `${((currentMovieIndex + 1) / movies.length) * 100}%` }}
-                    ></div>
+            <div className="space-y-2">
+              {Object.entries(users).map(([id, u]) => (
+                <div key={id} className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-primary-600 flex items-center justify-center text-white font-bold text-sm">
+                    {u.name?.charAt(0)?.toUpperCase() || '?'}
                   </div>
+                  <span className="text-gray-300">{u.name}</span>
+                  {u.isHost && (
+                    <span className="text-xs px-2 py-0.5 bg-primary-900/50 text-primary-400 rounded-full">Host</span>
+                  )}
+                  {id === user?.id && (
+                    <span className="text-xs text-gray-500">(you)</span>
+                  )}
                 </div>
-              </div>
-              
-              <MovieCard 
-                movie={movies[currentMovieIndex]} 
-                onVote={handleVote}
-              />
+              ))}
+            </div>
+          </div>
+
+          {/* Vibe display */}
+          {room?.settings?.vibe && (
+            <div className="text-center">
+              <span className="text-gray-500 text-xs uppercase tracking-wider">Tonight's Vibe</span>
+              <p className="text-white font-semibold capitalize">{vibeLabel(room.settings.vibe)}</p>
             </div>
           )}
-          
-          {/* Results state */}
-          {votingComplete && !isRoulette && !selectedMovie && (
-            <VoteResults 
-              roomCode={roomCode}
-              onStartRoulette={handleStartRoulette}
-            />
+
+          {/* Error */}
+          {error && (
+            <div className="bg-red-900/30 border border-red-700 text-red-300 p-3 rounded-xl text-sm text-center">
+              {error}
+            </div>
           )}
-          
-          {/* Roulette state */}
-          {isRoulette && (
-            <Roulette 
-              roomCode={roomCode}
-              selectedMovie={selectedMovie}
-            />
-          )}
-          
-          {/* Selected movie state */}
-          {selectedMovie && !isRoulette && (
-            <div className="bg-gray-900 rounded-lg p-6 text-center">
-              <h2 className="text-2xl font-bold mb-4 text-white">Movie Selected!</h2>
-              <div className="max-w-md mx-auto">
-                <MovieCard 
-                  movie={selectedMovie}
-                  showVoteButtons={false}
-                />
-                <p className="mt-6 text-gray-300">
-                  Enjoy watching {selectedMovie.title}!
-                </p>
-              </div>
+
+          {/* Start Button (host only) */}
+          {user?.isHost ? (
+            <button
+              onClick={handleStartGame}
+              className="w-full py-4 bg-gradient-to-r from-primary-600 to-primary-500 hover:from-primary-500 hover:to-primary-400 text-white text-lg font-bold rounded-xl transition-all shadow-lg shadow-primary-900/50"
+            >
+              Start Game
+            </button>
+          ) : (
+            <div className="text-center py-4 text-gray-400">
+              Waiting for the host to start the game...
             </div>
           )}
         </div>
-      </div>
+      )}
+
+      {/* Phase: Loading movies */}
+      {phase === 'loading' && (
+        <div className="text-center py-20 animate-fade-in">
+          <div className="animate-spin rounded-full h-16 w-16 border-t-2 border-b-2 border-primary-500 mx-auto" />
+          <p className="mt-4 text-xl text-white font-semibold">Finding movies...</p>
+          <p className="text-gray-500 mt-1">Setting up your game night</p>
+        </div>
+      )}
+
+      {/* Phase: Speed Round */}
+      {phase === 'speed-round' && (
+        <div>
+          <SpeedRound
+            movies={speedRoundMovies}
+            onComplete={handleSpeedRoundComplete}
+          />
+        </div>
+      )}
+
+      {/* Phase: The Pitch */}
+      {phase === 'the-pitch' && (
+        <div>
+          <ThePitch
+            movies={pitchMovies}
+            onComplete={handlePitchComplete}
+          />
+        </div>
+      )}
+
+      {/* Phase: Face-Off */}
+      {phase === 'face-off' && (
+        <div>
+          <FaceOff
+            movies={faceOffMovies}
+            onComplete={handleFaceOffComplete}
+          />
+        </div>
+      )}
+
+      {/* Phase: Results */}
+      {phase === 'results' && (
+        <div>
+          <GameResults
+            winner={winner}
+            speedResults={speedResults}
+            pitchResults={pitchResults}
+            users={users}
+            userId={user?.id}
+            onPlayAgain={handlePlayAgain}
+            onClose={handleDone}
+          />
+        </div>
+      )}
+
+      {/* Round progress indicator (visible during game rounds) */}
+      {['speed-round', 'the-pitch', 'face-off'].includes(phase) && (
+        <div className="mt-6 flex justify-center gap-2">
+          {[
+            { id: 'speed-round', icon: FaBolt, label: 'Speed' },
+            { id: 'the-pitch', icon: FaMicrophone, label: 'Pitch' },
+            { id: 'face-off', icon: FaTrophy, label: 'Face-Off' },
+          ].map((step) => {
+            const isActive = step.id === phase;
+            const isDone = PHASES.indexOf(phase) > PHASES.indexOf(step.id);
+            const Icon = step.icon;
+            return (
+              <div
+                key={step.id}
+                className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium transition ${
+                  isActive
+                    ? 'bg-primary-900/50 text-primary-400 border border-primary-700'
+                    : isDone
+                    ? 'bg-green-900/30 text-green-500 border border-green-800'
+                    : 'bg-gray-800/50 text-gray-600 border border-gray-700'
+                }`}
+              >
+                <Icon className="text-[0.6rem]" />
+                {step.label}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };
+
+// --- Helpers ---
+
+function vibeToParams(vibe) {
+  switch (vibe) {
+    case 'hidden-gems':
+      return { page: Math.floor(Math.random() * 10) + 3, sort_by: 'vote_average.desc' };
+    case 'new-releases':
+      return { page: 1 };
+    case 'wildcard':
+      return { page: Math.floor(Math.random() * 20) + 1 };
+    case 'popular':
+    default:
+      return { page: Math.floor(Math.random() * 3) + 1 };
+  }
+}
+
+function vibeLabel(vibe) {
+  const labels = {
+    popular: 'Movie Buffs',
+    'hidden-gems': 'Hidden Gems',
+    'new-releases': 'Fresh Picks',
+    wildcard: 'Wildcard',
+  };
+  return labels[vibe] || vibe;
+}
+
+function shuffleArray(arr) {
+  const shuffled = [...arr];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
+}
 
 export default Room;

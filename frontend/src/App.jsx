@@ -12,39 +12,12 @@ import NotFound from './pages/NotFound';
 import Navbar from './components/Navbar';
 import Footer from './components/Footer';
 
-// Firebase config
-import { initializeApp } from 'firebase/app';
-import { getDatabase } from 'firebase/database';
-
 function App() {
   const navigate = useNavigate();
   const [user, setUser] = useState(() => {
-    // Try to get user from localStorage
     const savedUser = localStorage.getItem('moviematch_user');
     return savedUser ? JSON.parse(savedUser) : null;
   });
-
-  // Initialize Firebase
-  useEffect(() => {
-    const firebaseConfig = {
-      apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-      authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-      databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
-      projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-      storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-      messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-      appId: import.meta.env.VITE_FIREBASE_APP_ID
-    };
-
-    // Initialize Firebase
-    const app = initializeApp(firebaseConfig);
-    
-    // Initialize Realtime Database
-    const database = getDatabase(app);
-    
-    // Log initialization
-    console.log('Firebase initialized');
-  }, []);
 
   // Save user to localStorage when it changes
   useEffect(() => {

@@ -1,72 +1,50 @@
 import axios from 'axios';
 
-// Create axios instance with base URL
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_URL || '/api',
 });
 
-// Movie related API calls
+// Movie API
 export const movieApi = {
-  // Discover movies with filters
-  discoverMovies: (filters = {}) => {
-    return api.get('/movies/discover', { params: filters });
-  },
-  
-  // Get movie details
-  getMovie: (movieId) => {
-    return api.get(`/movies/${movieId}`);
-  },
-  
-  // Get movie genres list
-  getGenres: () => {
-    return api.get('/movies/genres/list');
-  }
+  discoverMovies: (filters = {}) => api.get('/movies/discover', { params: filters }),
+  getMovie: (movieId) => api.get(`/movies/${movieId}`),
+  getGenres: () => api.get('/movies/genres/list'),
 };
 
-// Room related API calls
+// Room API
 export const roomApi = {
-  // Create a new room
-  createRoom: (creatorName, filters = {}) => {
-    return api.post(`/rooms?creatorName=${encodeURIComponent(creatorName)}`, { filters });
-  },
-  
-  // Join an existing room
-  joinRoom: (roomCode, userName) => {
-    return api.post(`/rooms/${roomCode}/join`, { userName });
-  },
-  
-  // Get room details
-  getRoom: (roomCode) => {
-    return api.get(`/rooms/${roomCode}`);
-  },
-  
-  // Add movies to a room
-  addMovies: (roomCode, movies, userId) => {
-    return api.post(`/rooms/${roomCode}/movies`, { movies, userId });
-  },
-  
-  // Vote on a movie
-  voteOnMovie: (roomCode, userId, movieId, vote) => {
-    return api.post(`/rooms/${roomCode}/vote`, { userId, movieId, vote });
-  },
-  
-  // Get voting results
-  getResults: (roomCode) => {
-    return api.get(`/rooms/${roomCode}/results`);
-  },
-  
-  // Start roulette to pick a random movie
-  startRoulette: (roomCode) => {
-    return api.post(`/rooms/${roomCode}/roulette`);
-  },
-  
-  // Close a room
-  closeRoom: (roomCode, userId) => {
-    return api.post(`/rooms/${roomCode}/close`, { userId });
-  }
+  createRoom: (creatorName, filters = {}, settings = {}) =>
+    api.post('/rooms', { creatorName, filters, settings }),
+
+  joinRoom: (roomCode, userName) =>
+    api.post(`/rooms/${roomCode}/join`, { userName }),
+
+  getRoom: (roomCode) => api.get(`/rooms/${roomCode}`),
+
+  addMovies: (roomCode, movies, userId) =>
+    api.post(`/rooms/${roomCode}/movies`, { movies, userId }),
+
+  startGame: (roomCode, userId) =>
+    api.post(`/rooms/${roomCode}/start-game`, { userId }),
+
+  voteOnMovie: (roomCode, userId, movieId, vote) =>
+    api.post(`/rooms/${roomCode}/vote`, { userId, movieId, vote }),
+
+  advance: (roomCode) =>
+    api.post(`/rooms/${roomCode}/advance`),
+
+  timeout: (roomCode) =>
+    api.post(`/rooms/${roomCode}/timeout`),
+
+  getResults: (roomCode) => api.get(`/rooms/${roomCode}/results`),
+
+  startRoulette: (roomCode) => api.post(`/rooms/${roomCode}/roulette`),
+
+  selectMovie: (roomCode, movieId, userId) =>
+    api.post(`/rooms/${roomCode}/select`, { movieId, userId }),
+
+  closeRoom: (roomCode, userId) =>
+    api.post(`/rooms/${roomCode}/close`, { userId }),
 };
 
-export default {
-  movie: movieApi,
-  room: roomApi
-};
+export default { movie: movieApi, room: roomApi };
